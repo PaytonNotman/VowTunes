@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "VowTunes",
+    "slug": "vowtunes",
+    "version": "0.1.0",
+    "orientation": "landscape",
+    "scheme": "vowtunes",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.payton.vowtunes",
+      "supportsTablet": true,
+      "requireFullScreen": true
+    },
+    "android": {
+      "package": "com.payton.vowtunes"
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-secure-store"
+    ]
+  }
+}
