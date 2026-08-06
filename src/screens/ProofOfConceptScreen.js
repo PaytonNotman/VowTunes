@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,6 +22,8 @@ import { UpcomingTrackList } from '../components/UpcomingTrackList';
 import { useSpotify } from '../context/SpotifyContext';
 
 const QUEUE_REFRESH_INTERVAL_MS = 10_000;
+const SEARCH_DEBOUNCE_MS = 350;
+const MIN_SEARCH_LENGTH = 2;
 
 function describeError(error) {
   if (error.status === 401) {
@@ -61,6 +64,7 @@ export function ProofOfConceptScreen() {
   const [addingTrackId, setAddingTrackId] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const searchRequestIdRef = useRef(0);
 
   const withSpotifyToken = useCallback(async (operation) => {
     let accessToken = await getAccessToken();
@@ -125,24 +129,50 @@ export function ProofOfConceptScreen() {
     return () => clearInterval(intervalId);
   }, [refreshQueue]);
 
-  const handleSearch = async () => {
-    if (!query.trim() || isSearching) {
+  useEffect(() => {
+    const normalizedQuery = query.trim();
+    const requestId = searchRequestIdRef.current;
+
+    if (normalizedQuery.length < MIN_SEARCH_LENGTH) {
+      setTracks([]);
+      setIsSearching(false);
       return;
     }
-    setIsSearching(true);
+
+    const timeoutId = setTimeout(async () => {
+      setIsSearching(true);
+      setTracks([]);
+
+      try {
+        const results = await withSpotifyToken((accessToken) => searchTracks(accessToken, normalizedQuery));
+
+        if (requestId !== searchRequestIdRef.current) {
+          return;
+        }
+
+        setTracks(results);
+        if (results.length === 0) {
+          setMessage('No tracks matched that search.');
+        }
+      } catch (requestError) {
+        if (requestId === searchRequestIdRef.current) {
+          setError(describeError(requestError));
+        }
+      } finally {
+        if (requestId === searchRequestIdRef.current) {
+          setIsSearching(false);
+        }
+      }
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeoutId);
+  }, [query, withSpotifyToken]);
+
+  const handleQueryChange = (nextQuery) => {
+    searchRequestIdRef.current += 1;
+    setQuery(nextQuery);
     setError('');
     setMessage('');
-    try {
-      const results = await withSpotifyToken((accessToken) => searchTracks(accessToken, query));
-      setTracks(results);
-      if (results.length === 0) {
-        setMessage('No tracks matched that search.');
-      }
-    } catch (requestError) {
-      setError(describeError(requestError));
-    } finally {
-      setIsSearching(false);
-    }
   };
 
   const handleAddTrack = async (track) => {
@@ -154,6 +184,10 @@ export function ProofOfConceptScreen() {
     setMessage('');
     try {
       await withSpotifyToken((accessToken) => addTrackToQueue(accessToken, track.uri, selectedDeviceId));
+      searchRequestIdRef.current += 1;
+      setQuery('');
+      setTracks([]);
+      Keyboard.dismiss();
       setMessage(`Added “${track.name}” to the queue.`);
       await refreshQueue();
     } catch (requestError) {
@@ -255,21 +289,15 @@ export function ProofOfConceptScreen() {
         <View style={styles.searchRow}>
           <TextInput
             autoCapitalize="none"
-            onChangeText={setQuery}
-            onSubmitEditing={handleSearch}
+            onChangeText={handleQueryChange}
+            onSubmitEditing={Keyboard.dismiss}
             placeholder="Song or artist"
             placeholderTextColor="#9a8e87"
             returnKeyType="search"
             style={styles.searchInput}
             value={query}
           />
-          <Pressable
-            disabled={!query.trim() || isSearching}
-            onPress={handleSearch}
-            style={[styles.searchButton, (!query.trim() || isSearching) && styles.disabledButton]}
-          >
-            {isSearching ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Search</Text>}
-          </Pressable>
+          {isSearching ? <ActivityIndicator color="#7a3145" style={styles.searchSpinner} /> : null}
         </View>
 
         {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
@@ -341,9 +369,9 @@ const styles = StyleSheet.create({
   main: { flex: 1, paddingHorizontal: 34, paddingTop: 30 },
   mainTitle: { color: '#342622', fontSize: 32, fontWeight: '800', letterSpacing: -0.8 },
   mainSubtitle: { color: '#7b6d66', fontSize: 15, marginTop: 5 },
-  searchRow: { flexDirection: 'row', marginTop: 22 },
-  searchInput: { backgroundColor: '#fff', borderColor: '#dfd2c8', borderRadius: 12, borderWidth: 1, color: '#342622', flex: 1, fontSize: 16, minHeight: 50, paddingHorizontal: 16 },
-  searchButton: { alignItems: 'center', backgroundColor: '#7a3145', borderRadius: 12, justifyContent: 'center', marginLeft: 10, minWidth: 110 },
+  searchRow: { marginTop: 22, position: 'relative' },
+  searchInput: { backgroundColor: '#fff', borderColor: '#dfd2c8', borderRadius: 12, borderWidth: 1, color: '#342622', fontSize: 16, minHeight: 50, paddingHorizontal: 16, paddingRight: 50 },
+  searchSpinner: { position: 'absolute', right: 16, top: 15 },
   errorBanner: { backgroundColor: '#f8dfe1', borderRadius: 9, color: '#8d2931', marginTop: 12, padding: 11 },
   successBanner: { backgroundColor: '#dcebdc', borderRadius: 9, color: '#32623b', marginTop: 12, padding: 11 },
   warningBanner: { backgroundColor: '#f5e8ce', borderRadius: 9, color: '#805515', marginTop: 12, padding: 11 },
