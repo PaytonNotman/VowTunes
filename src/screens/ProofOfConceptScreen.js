@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	ActivityIndicator,
+	Animated,
 	FlatList,
 	Keyboard,
+	Platform,
 	Pressable,
 	ScrollView,
 	StyleSheet,
@@ -24,6 +26,8 @@ import { useSpotify } from "../context/SpotifyContext";
 const QUEUE_REFRESH_INTERVAL_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 250;
 const MIN_SEARCH_LENGTH = 2;
+const MESSAGE_DISPLAY_DURATION_MS = 2000;
+const MESSAGE_FADE_DURATION_MS = 2000;
 
 function queuesMatch(currentTracks, nextTracks) {
 	return (
@@ -73,6 +77,32 @@ export function ProofOfConceptScreen() {
 	const [error, setError] = useState("");
 	const searchRequestIdRef = useRef(0);
 	const queueRefreshInFlightRef = useRef(false);
+	const messageOpacity = useRef(new Animated.Value(0)).current;
+
+	useEffect(() => {
+		if (!message) {
+			messageOpacity.setValue(0);
+			return undefined;
+		}
+
+		messageOpacity.setValue(1);
+		const displayTimeoutId = setTimeout(() => {
+			Animated.timing(messageOpacity, {
+				duration: MESSAGE_FADE_DURATION_MS,
+				toValue: 0,
+				useNativeDriver: Platform.OS !== "web",
+			}).start(({ finished }) => {
+				if (finished) {
+					setMessage("");
+				}
+			});
+		}, MESSAGE_DISPLAY_DURATION_MS);
+
+		return () => {
+			clearTimeout(displayTimeoutId);
+			messageOpacity.stopAnimation();
+		};
+	}, [message, messageOpacity]);
 
 	const withSpotifyToken = useCallback(
 		async (operation) => {
@@ -379,12 +409,20 @@ export function ProofOfConceptScreen() {
 							style={styles.searchSpinner}
 						/>
 					) : null}
+					{message ? (
+						<View pointerEvents='none' style={styles.messageToastLayer}>
+							<Animated.View
+								style={[
+									styles.messageToast,
+									{ opacity: messageOpacity },
+								]}>
+								<Text style={styles.messageToastText}>{message}</Text>
+							</Animated.View>
+						</View>
+					) : null}
 				</View>
 
 				{error ? <Text style={styles.errorBanner}>{error}</Text> : null}
-				{message ? (
-					<Text style={styles.successBanner}>{message}</Text>
-				) : null}
 				{!selectedDeviceId ? (
 					<Text style={styles.warningBanner}>
 						Select an active Spotify device before queueing.
@@ -582,17 +620,45 @@ const styles = StyleSheet.create({
 		paddingRight: 50,
 	},
 	searchSpinner: { position: "absolute", right: 16, top: 15 },
+	messageToastLayer: {
+		alignItems: "center",
+		left: 0,
+		position: "absolute",
+		right: 0,
+		top: 60,
+		zIndex: 10,
+	},
+	messageToast: {
+		backgroundColor: "#dcebdc",
+		borderColor: "#bdd8c0",
+		borderRadius: 12,
+		borderWidth: 1,
+		maxWidth: "86%",
+		paddingHorizontal: 22,
+		paddingVertical: 11,
+		...Platform.select({
+			web: {
+				boxShadow: "0 3px 16px rgba(52, 38, 34, 0.16)",
+			},
+			default: {
+				elevation: 5,
+				shadowColor: "#342622",
+				shadowOffset: { height: 3, width: 0 },
+				shadowOpacity: 0.16,
+				shadowRadius: 8,
+			},
+		}),
+	},
+	messageToastText: {
+		color: "#32623b",
+		fontSize: 13,
+		fontWeight: "700",
+		textAlign: "center",
+	},
 	errorBanner: {
 		backgroundColor: "#f8dfe1",
 		borderRadius: 9,
 		color: "#8d2931",
-		marginTop: 12,
-		padding: 11,
-	},
-	successBanner: {
-		backgroundColor: "#dcebdc",
-		borderRadius: 9,
-		color: "#32623b",
 		marginTop: 12,
 		padding: 11,
 	},
