@@ -36,6 +36,29 @@ function queuesMatch(currentTracks, nextTracks) {
 	);
 }
 
+function reconcileRequestedQueue(requestedTracks, nextTracks) {
+	const remainingTrackCounts = new Map();
+
+	nextTracks.forEach((track) => {
+		const trackIdentity = track.uri || track.id;
+		remainingTrackCounts.set(
+			trackIdentity,
+			(remainingTrackCounts.get(trackIdentity) || 0) + 1,
+		);
+	});
+
+	return requestedTracks.flatMap((request) => {
+		const remainingCount = remainingTrackCounts.get(request.trackIdentity) || 0;
+
+		if (remainingCount > 0) {
+			remainingTrackCounts.set(request.trackIdentity, remainingCount - 1);
+			return [{ ...request, observed: true }];
+		}
+
+		return request.observed ? [] : [request];
+	});
+}
+
 function describeError(error) {
 	if (error.status === 401) {
 		return "Spotify authorization expired. Reconnect and try again.";
@@ -73,9 +96,12 @@ export function ProofOfConceptScreen() {
 	const [isLoadingQueue, setIsLoadingQueue] = useState(false);
 	const [isSearching, setIsSearching] = useState(false);
 	const [addingTrackId, setAddingTrackId] = useState(null);
+	const [queuedTrackAnimation, setQueuedTrackAnimation] = useState(null);
 	const [message, setMessage] = useState("");
 	const [error, setError] = useState("");
 	const searchRequestIdRef = useRef(0);
+	const queuedTrackAnimationIdRef = useRef(0);
+	const requestedQueueRef = useRef([]);
 	const queueRefreshInFlightRef = useRef(false);
 	const messageOpacity = useRef(new Animated.Value(0)).current;
 
@@ -165,6 +191,10 @@ export function ProofOfConceptScreen() {
 
 		try {
 			const nextTracks = await withSpotifyToken(getPlaybackQueue);
+			requestedQueueRef.current = reconcileRequestedQueue(
+				requestedQueueRef.current,
+				nextTracks,
+			);
 			setUpcomingTracks((currentTracks) =>
 				queuesMatch(currentTracks, nextTracks) ? currentTracks : nextTracks,
 			);
@@ -179,6 +209,13 @@ export function ProofOfConceptScreen() {
 			}
 		}
 	}, [isAuthenticated, withSpotifyToken]);
+
+	useEffect(() => {
+		if (!isAuthenticated) {
+			requestedQueueRef.current = [];
+			setQueuedTrackAnimation(null);
+		}
+	}, [isAuthenticated]);
 
 	useEffect(() => {
 		refreshDevices();
@@ -252,6 +289,22 @@ export function ProofOfConceptScreen() {
 			await withSpotifyToken((accessToken) =>
 				addTrackToQueue(accessToken, track.uri, selectedDeviceId),
 			);
+			queuedTrackAnimationIdRef.current += 1;
+			const animationId = queuedTrackAnimationIdRef.current;
+			const shouldDropIntoFirstSlot = requestedQueueRef.current.length === 0;
+			requestedQueueRef.current = [
+				...requestedQueueRef.current,
+				{
+					id: animationId,
+					observed: false,
+					trackIdentity: track.uri || track.id,
+				},
+			];
+			setQueuedTrackAnimation({
+				id: animationId,
+				shouldDropIntoFirstSlot,
+				track,
+			});
 			searchRequestIdRef.current += 1;
 			setQuery("");
 			setTracks([]);
@@ -450,6 +503,7 @@ export function ProofOfConceptScreen() {
 					<UpcomingTrackList
 						isLoading={isLoadingQueue}
 						onRefresh={() => refreshQueue()}
+						queuedTrackAnimation={queuedTrackAnimation}
 						tracks={upcomingTracks}
 					/>
 				)}
