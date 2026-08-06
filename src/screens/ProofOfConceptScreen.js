@@ -20,6 +20,8 @@ import { TrackCard } from '../components/TrackCard';
 import { UpcomingTrackList } from '../components/UpcomingTrackList';
 import { useSpotify } from '../context/SpotifyContext';
 
+const QUEUE_REFRESH_INTERVAL_MS = 10_000;
+
 function describeError(error) {
   if (error.status === 401) {
     return 'Spotify authorization expired. Reconnect and try again.';
@@ -119,7 +121,7 @@ export function ProofOfConceptScreen() {
 
   useEffect(() => {
     refreshQueue();
-    const intervalId = setInterval(refreshQueue, 30_000);
+    const intervalId = setInterval(refreshQueue, QUEUE_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, [refreshQueue]);
 
