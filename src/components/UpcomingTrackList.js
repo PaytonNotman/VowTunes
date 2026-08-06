@@ -1,6 +1,8 @@
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
+  const trackOccurrences = new Map();
+
   return (
     <View style={styles.section}>
       <View style={styles.header}>
@@ -32,9 +34,12 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
       {tracks.map((track, index) => {
         const imageUrl = track.album?.images?.[2]?.url || track.album?.images?.[1]?.url || track.album?.images?.[0]?.url;
         const artists = track.artists?.map((artist) => artist.name).join(', ');
+        const trackKey = track.uri || track.id;
+        const occurrence = (trackOccurrences.get(trackKey) || 0) + 1;
+        trackOccurrences.set(trackKey, occurrence);
 
         return (
-          <View key={`${track.uri}-${index}`} style={styles.track}>
+          <View key={`${trackKey}-${occurrence}`} style={styles.track}>
             <View style={styles.position}>
               <Text style={styles.positionText}>{index + 1}</Text>
             </View>
@@ -80,7 +85,9 @@ const styles = StyleSheet.create({
     color: '#7a3145',
     fontSize: 13,
     fontWeight: '800',
+    minWidth: 88,
     padding: 8,
+    textAlign: 'right',
   },
   refreshDisabled: {
     opacity: 0.5,
