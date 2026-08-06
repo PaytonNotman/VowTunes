@@ -47,6 +47,11 @@ export async function getAvailableDevices(accessToken) {
   return payload.devices ?? [];
 }
 
+export async function getPlaybackQueue(accessToken) {
+  const payload = await spotifyRequest(accessToken, '/me/player/queue');
+  return payload?.queue?.slice(0, 5) ?? [];
+}
+
 export async function addTrackToQueue(accessToken, trackUri, deviceId) {
   const parameters = new URLSearchParams({ uri: trackUri });
 
