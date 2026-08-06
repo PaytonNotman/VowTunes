@@ -10,9 +10,17 @@ import {
   View,
 } from 'react-native';
 
-import { addTrackToQueue, getAvailableDevices, searchTracks } from '../api/spotifyClient';
+import {
+  addTrackToQueue,
+  getAvailableDevices,
+  getPlaybackQueue,
+  searchTracks,
+} from '../api/spotifyClient';
 import { TrackCard } from '../components/TrackCard';
+import { UpcomingTrackList } from '../components/UpcomingTrackList';
 import { useSpotify } from '../context/SpotifyContext';
+
+const QUEUE_REFRESH_INTERVAL_MS = 10_000;
 
 function describeError(error) {
   if (error.status === 401) {
@@ -46,7 +54,9 @@ export function ProofOfConceptScreen() {
   const [selectedDeviceId, setSelectedDeviceId] = useState(null);
   const [query, setQuery] = useState('');
   const [tracks, setTracks] = useState([]);
+  const [upcomingTracks, setUpcomingTracks] = useState([]);
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [addingTrackId, setAddingTrackId] = useState(null);
   const [message, setMessage] = useState('');
@@ -90,9 +100,30 @@ export function ProofOfConceptScreen() {
     }
   }, [isAuthenticated, withSpotifyToken]);
 
+  const refreshQueue = useCallback(async () => {
+    if (!isAuthenticated) {
+      return;
+    }
+    setIsLoadingQueue(true);
+    try {
+      const nextTracks = await withSpotifyToken(getPlaybackQueue);
+      setUpcomingTracks(nextTracks);
+    } catch (requestError) {
+      setError(describeError(requestError));
+    } finally {
+      setIsLoadingQueue(false);
+    }
+  }, [isAuthenticated, withSpotifyToken]);
+
   useEffect(() => {
     refreshDevices();
   }, [refreshDevices]);
+
+  useEffect(() => {
+    refreshQueue();
+    const intervalId = setInterval(refreshQueue, QUEUE_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [refreshQueue]);
 
   const handleSearch = async () => {
     if (!query.trim() || isSearching) {
@@ -124,6 +155,7 @@ export function ProofOfConceptScreen() {
     try {
       await withSpotifyToken((accessToken) => addTrackToQueue(accessToken, track.uri, selectedDeviceId));
       setMessage(`Added “${track.name}” to the queue.`);
+      await refreshQueue();
     } catch (requestError) {
       setError(describeError(requestError));
     } finally {
@@ -244,20 +276,28 @@ export function ProofOfConceptScreen() {
         {message ? <Text style={styles.successBanner}>{message}</Text> : null}
         {!selectedDeviceId ? <Text style={styles.warningBanner}>Select an active Spotify device before queueing.</Text> : null}
 
-        <FlatList
-          contentContainerStyle={styles.results}
-          data={tracks}
-          keyExtractor={(track) => track.id}
-          keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => (
-            <TrackCard
-              disabled={!selectedDeviceId || Boolean(addingTrackId)}
-              isAdding={addingTrackId === item.id}
-              onAdd={handleAddTrack}
-              track={item}
-            />
-          )}
-        />
+        {query.trim() ? (
+          <FlatList
+            contentContainerStyle={styles.results}
+            data={tracks}
+            keyExtractor={(track) => track.id}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <TrackCard
+                disabled={!selectedDeviceId || Boolean(addingTrackId)}
+                isAdding={addingTrackId === item.id}
+                onAdd={handleAddTrack}
+                track={item}
+              />
+            )}
+          />
+        ) : (
+          <UpcomingTrackList
+            isLoading={isLoadingQueue}
+            onRefresh={refreshQueue}
+            tracks={upcomingTracks}
+          />
+        )}
       </View>
     </View>
   );
