@@ -843,7 +843,7 @@ const styles = StyleSheet.create({
 		left: 0,
 		position: "absolute",
 		right: 0,
-		top: 60,
+		top: 52,
 		zIndex: 10,
 	},
 	messageToast: {
