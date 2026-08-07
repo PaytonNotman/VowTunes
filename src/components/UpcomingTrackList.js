@@ -3,6 +3,8 @@ import { ActivityIndicator, Animated, Easing, Image, Pressable, StyleSheet, Text
 
 const TRACK_REMOVAL_DURATION_MS = 360;
 const TRACK_ADDITION_DURATION_MS = 360;
+const TRACK_DROP_DURATION_MS = 520;
+const QUEUE_RETURN_DURATION_MS = 220;
 const TRACK_ROW_HEIGHT = 80;
 
 function getTrackIdentity(track) {
@@ -17,7 +19,7 @@ function findAddedTrackIndex(currentTracks, nextTracks) {
     remainingTrackCounts.set(trackIdentity, (remainingTrackCounts.get(trackIdentity) || 0) + 1);
   });
 
-  return nextTracks.findIndex((track) => {
+  const addedTrackIndex = nextTracks.findIndex((track) => {
     const trackIdentity = getTrackIdentity(track);
     const remainingCount = remainingTrackCounts.get(trackIdentity) || 0;
 
@@ -28,26 +30,82 @@ function findAddedTrackIndex(currentTracks, nextTracks) {
     remainingTrackCounts.set(trackIdentity, remainingCount - 1);
     return false;
   });
+
+  if (addedTrackIndex >= 0) {
+    return addedTrackIndex;
+  }
+
+  const maximumOverlap = Math.min(currentTracks.length, nextTracks.length);
+
+  for (let overlapLength = maximumOverlap; overlapLength > 0; overlapLength -= 1) {
+    const currentOffset = currentTracks.length - overlapLength;
+    const overlaps = nextTracks
+      .slice(0, overlapLength)
+      .every((track, index) =>
+        getTrackIdentity(track) === getTrackIdentity(currentTracks[currentOffset + index]),
+      );
+
+    if (overlaps) {
+      return overlapLength < nextTracks.length ? overlapLength : -1;
+    }
+  }
+
+  return nextTracks.length > 0 ? 0 : -1;
 }
 
-export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
+export function UpcomingTrackList({
+  isLoading,
+  onQueuedTrackAnimationHandled,
+  onRefresh,
+  queuedTrackAnimation,
+  queuedTrackAnimations,
+  tracks,
+}) {
   const [displayedTracks, setDisplayedTracks] = useState(tracks);
   const [isRemovingFirstTrack, setIsRemovingFirstTrack] = useState(false);
   const [enteringTrackIndex, setEnteringTrackIndex] = useState(null);
+  const [droppingTrackIndex, setDroppingTrackIndex] = useState(null);
   const displayedTracksRef = useRef(tracks);
   const latestTracksRef = useRef(tracks);
   const hasLoadedQueueRef = useRef(false);
   const previousIsLoadingRef = useRef(isLoading);
   const removalAnimationRef = useRef(null);
   const additionAnimationRef = useRef(null);
+  const dropAnimationRef = useRef(null);
+  const queueReturnAnimationRef = useRef(null);
   const removalProgress = useRef(new Animated.Value(1)).current;
   const additionProgress = useRef(new Animated.Value(1)).current;
+  const dropProgress = useRef(new Animated.Value(1)).current;
+  const queueReturnProgress = useRef(new Animated.Value(queuedTrackAnimation ? 0 : 1)).current;
   const trackOccurrences = new Map();
+
+  useEffect(() => {
+    if (!queuedTrackAnimation) {
+      return undefined;
+    }
+
+    queueReturnAnimationRef.current?.stop();
+    queueReturnProgress.setValue(0);
+
+    const animation = Animated.timing(queueReturnProgress, {
+      duration: QUEUE_RETURN_DURATION_MS,
+      easing: Easing.out(Easing.cubic),
+      toValue: 1,
+      useNativeDriver: false,
+    });
+
+    queueReturnAnimationRef.current = animation;
+    animation.start(() => {
+      queueReturnAnimationRef.current = null;
+    });
+
+    return () => animation.stop();
+  }, [queueReturnProgress, queuedTrackAnimation]);
 
   useEffect(() => {
     latestTracksRef.current = tracks;
 
-    if (removalAnimationRef.current || additionAnimationRef.current) {
+    if (removalAnimationRef.current || additionAnimationRef.current || dropAnimationRef.current) {
       return;
     }
 
@@ -83,8 +141,61 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
       });
     };
 
+    const animateTrackDrop = (addedTrackIndex) => {
+      dropProgress.setValue(0);
+      setDroppingTrackIndex(addedTrackIndex);
+
+      const animation = Animated.timing(dropProgress, {
+        duration: TRACK_DROP_DURATION_MS,
+        easing: Easing.out(Easing.back(1.15)),
+        toValue: 1,
+        useNativeDriver: false,
+      });
+
+      dropAnimationRef.current = animation;
+      animation.start(({ finished }) => {
+        dropAnimationRef.current = null;
+
+        if (!finished) {
+          return;
+        }
+
+        const latestTracks = latestTracksRef.current;
+        displayedTracksRef.current = latestTracks;
+        setDisplayedTracks(latestTracks);
+        setDroppingTrackIndex(null);
+        dropProgress.setValue(1);
+      });
+    };
+
+    const animateConfirmedAddition = (addedTrackIndex, nextTracks = tracks) => {
+      const addedTrack = nextTracks[addedTrackIndex];
+      const matchingQueuedTrackAnimation = queuedTrackAnimations.find(
+        (animation) =>
+          getTrackIdentity(addedTrack) === getTrackIdentity(animation.track),
+      );
+
+      if (matchingQueuedTrackAnimation) {
+        onQueuedTrackAnimationHandled(matchingQueuedTrackAnimation.id);
+      }
+
+      if (
+        matchingQueuedTrackAnimation?.shouldDropIntoFirstSlot &&
+        addedTrackIndex === 0
+      ) {
+        animateTrackDrop(addedTrackIndex);
+        return;
+      }
+
+      animateTrackAddition(addedTrackIndex);
+    };
+
     if (!shouldAnimateRemoval) {
-      const addedTrackIndex = (currentTracks.length > 0 || hasLoadedQueueRef.current)
+      const addedTrackIndex = (
+        currentTracks.length > 0 ||
+        hasLoadedQueueRef.current ||
+        queuedTrackAnimation
+      )
         ? findAddedTrackIndex(currentTracks, tracks)
         : -1;
 
@@ -95,7 +206,7 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
         return;
       }
 
-      animateTrackAddition(addedTrackIndex);
+      animateConfirmedAddition(addedTrackIndex);
       return;
     }
 
@@ -125,10 +236,18 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
 
       const addedTrackIndex = findAddedTrackIndex(currentTracks, latestTracks);
       if (addedTrackIndex >= 0) {
-        animateTrackAddition(addedTrackIndex);
+        animateConfirmedAddition(addedTrackIndex, latestTracks);
       }
     });
-  }, [additionProgress, removalProgress, tracks]);
+  }, [
+    additionProgress,
+    dropProgress,
+    onQueuedTrackAnimationHandled,
+    queuedTrackAnimation,
+    queuedTrackAnimations,
+    removalProgress,
+    tracks,
+  ]);
 
   useEffect(() => {
     if (previousIsLoadingRef.current && !isLoading) {
@@ -141,10 +260,28 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
   useEffect(() => () => {
     removalAnimationRef.current?.stop();
     additionAnimationRef.current?.stop();
+    dropAnimationRef.current?.stop();
+    queueReturnAnimationRef.current?.stop();
   }, []);
 
   return (
-    <View style={styles.section}>
+    <Animated.View
+      style={[
+        styles.section,
+        {
+          opacity: queueReturnProgress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.45, 1],
+          }),
+          transform: [{
+            translateY: queueReturnProgress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [12, 0],
+            }),
+          }],
+        },
+      ]}
+    >
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>UP NEXT</Text>
@@ -180,12 +317,14 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
 
         const isExiting = index === 0 && isRemovingFirstTrack;
         const isEntering = index === enteringTrackIndex;
+        const isDropping = index === droppingTrackIndex;
 
         return (
           <Animated.View
             key={`${trackKey}-${occurrence}`}
             style={[
               styles.trackSlot,
+              isDropping && styles.droppingTrackSlot,
               isExiting && {
                 height: removalProgress.interpolate({
                   inputRange: [0, 1],
@@ -212,6 +351,31 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
                   }),
                 }],
               },
+              isDropping && {
+                height: dropProgress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, TRACK_ROW_HEIGHT],
+                }),
+                opacity: dropProgress.interpolate({
+                  inputRange: [0, 0.25, 1],
+                  outputRange: [0, 1, 1],
+                  extrapolate: 'clamp',
+                }),
+                transform: [
+                  {
+                    translateY: dropProgress.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [-68, 0],
+                    }),
+                  },
+                  {
+                    scale: dropProgress.interpolate({
+                      inputRange: [0, 0.82, 1],
+                      outputRange: [0.94, 1.035, 1],
+                    }),
+                  },
+                ],
+              },
             ]}
           >
             <View style={styles.track}>
@@ -231,7 +395,7 @@ export function UpcomingTrackList({ isLoading, onRefresh, tracks }) {
           </Animated.View>
         );
       })}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -289,6 +453,10 @@ const styles = StyleSheet.create({
   },
   trackSlot: {
     overflow: 'hidden',
+  },
+  droppingTrackSlot: {
+    overflow: 'visible',
+    zIndex: 2,
   },
   track: {
     alignItems: 'center',
