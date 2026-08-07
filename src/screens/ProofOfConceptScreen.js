@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	Animated,
+	AppState,
 	FlatList,
 	Keyboard,
 	Platform,
@@ -17,13 +18,16 @@ import {
 	addTrackToQueue,
 	getAvailableDevices,
 	getPlaybackQueue,
+	getPlaybackState,
 	searchTracks,
 } from "../api/spotifyClient";
+import { NowPlayingCard } from "../components/NowPlayingCard";
 import { TrackCard } from "../components/TrackCard";
 import { UpcomingTrackList } from "../components/UpcomingTrackList";
 import { useSpotify } from "../context/SpotifyContext";
 
 const QUEUE_REFRESH_INTERVAL_MS = 5000;
+const PLAYBACK_REFRESH_INTERVAL_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 250;
 const MIN_SEARCH_LENGTH = 2;
 const MESSAGE_DISPLAY_DURATION_MS = 2000;
@@ -134,8 +138,13 @@ export function ProofOfConceptScreen() {
 	const [query, setQuery] = useState("");
 	const [tracks, setTracks] = useState([]);
 	const [upcomingTracks, setUpcomingTracks] = useState([]);
+	const [playbackState, setPlaybackState] = useState(null);
+	const [hasCheckedPlayback, setHasCheckedPlayback] = useState(false);
+	const [playbackStatusUnavailable, setPlaybackStatusUnavailable] = useState(false);
+	const [isAppActive, setIsAppActive] = useState(AppState.currentState === "active");
 	const [isLoadingDevices, setIsLoadingDevices] = useState(false);
 	const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+	const [isLoadingPlayback, setIsLoadingPlayback] = useState(false);
 	const [isSearching, setIsSearching] = useState(false);
 	const [addingTrackId, setAddingTrackId] = useState(null);
 	const [queuedTrackAnimation, setQueuedTrackAnimation] = useState(null);
@@ -147,7 +156,17 @@ export function ProofOfConceptScreen() {
 	const requestedQueueRef = useRef([]);
 	const upcomingTracksRef = useRef([]);
 	const queueRefreshInFlightRef = useRef(false);
+	const playbackRefreshInFlightRef = useRef(false);
+	const nextPlaybackRefreshAtRef = useRef(0);
 	const messageOpacity = useRef(new Animated.Value(0)).current;
+
+	useEffect(() => {
+		const subscription = AppState.addEventListener("change", (nextState) => {
+			setIsAppActive(nextState === "active");
+		});
+
+		return () => subscription.remove();
+	}, []);
 
 	useEffect(() => {
 		if (!message) {
@@ -224,7 +243,7 @@ export function ProofOfConceptScreen() {
 	const refreshQueue = useCallback(async (options = {}) => {
 		const { showError = true, showLoading = true } = options;
 
-		if (!isAuthenticated || queueRefreshInFlightRef.current) {
+		if (!isAuthenticated || !selectedDeviceId || !isAppActive || queueRefreshInFlightRef.current) {
 			return;
 		}
 
@@ -254,7 +273,7 @@ export function ProofOfConceptScreen() {
 				setIsLoadingQueue(false);
 			}
 		}
-	}, [isAuthenticated, withSpotifyToken]);
+	}, [isAppActive, isAuthenticated, selectedDeviceId, withSpotifyToken]);
 
 	useEffect(() => {
 		if (!isAuthenticated) {
@@ -271,6 +290,48 @@ export function ProofOfConceptScreen() {
 		);
 	}, []);
 
+	const refreshPlayback = useCallback(async (options = {}) => {
+		const { showError = true, showLoading = true } = options;
+
+		if (
+			!isAuthenticated ||
+			!selectedDeviceId ||
+			!isAppActive ||
+			playbackRefreshInFlightRef.current ||
+			Date.now() < nextPlaybackRefreshAtRef.current
+		) {
+			return;
+		}
+
+		playbackRefreshInFlightRef.current = true;
+		if (showLoading) {
+			setIsLoadingPlayback(true);
+		}
+
+		try {
+			const nextPlaybackState = await withSpotifyToken(getPlaybackState);
+			setPlaybackState(nextPlaybackState);
+			setPlaybackStatusUnavailable(false);
+			nextPlaybackRefreshAtRef.current = 0;
+		} catch (requestError) {
+			setPlaybackStatusUnavailable(true);
+			if (requestError.status === 429) {
+				const retryAfterSeconds = Number.parseInt(requestError.retryAfter, 10);
+				nextPlaybackRefreshAtRef.current = Date.now() +
+					(Number.isFinite(retryAfterSeconds) ? Math.max(retryAfterSeconds, 5) : 30) * 1000;
+			}
+			if (showError) {
+				setError(describeError(requestError));
+			}
+		} finally {
+			setHasCheckedPlayback(true);
+			playbackRefreshInFlightRef.current = false;
+			if (showLoading) {
+				setIsLoadingPlayback(false);
+			}
+		}
+	}, [isAppActive, isAuthenticated, selectedDeviceId, withSpotifyToken]);
+
 	useEffect(() => {
 		refreshDevices();
 	}, [refreshDevices]);
@@ -283,6 +344,25 @@ export function ProofOfConceptScreen() {
 		);
 		return () => clearInterval(intervalId);
 	}, [refreshQueue]);
+
+	useEffect(() => {
+		setHasCheckedPlayback(false);
+		setPlaybackStatusUnavailable(false);
+		nextPlaybackRefreshAtRef.current = 0;
+	}, [isAuthenticated, selectedDeviceId]);
+
+	useEffect(() => {
+		if (!selectedDeviceId) {
+			return undefined;
+		}
+
+		refreshPlayback();
+		const intervalId = setInterval(
+			() => refreshPlayback({ showError: false, showLoading: false }),
+			PLAYBACK_REFRESH_INTERVAL_MS,
+		);
+		return () => clearInterval(intervalId);
+	}, [refreshPlayback, selectedDeviceId]);
 
 	useEffect(() => {
 		const normalizedQuery = query.trim();
@@ -376,6 +456,8 @@ export function ProofOfConceptScreen() {
 			setAddingTrackId(null);
 		}
 	};
+
+	const selectedDevice = devices.find((device) => device.id === selectedDeviceId) || null;
 
 	if (isRestoring) {
 		return (
@@ -542,31 +624,52 @@ export function ProofOfConceptScreen() {
 				) : null}
 
 				{query.trim() ? (
-					<FlatList
-						contentContainerStyle={styles.results}
-						data={tracks}
-						keyExtractor={(track) => track.id}
-						keyboardShouldPersistTaps='handled'
-						renderItem={({ item }) => (
-							<TrackCard
-								disabled={
-									!selectedDeviceId || Boolean(addingTrackId)
-								}
-								isAdding={addingTrackId === item.id}
-								onAdd={handleAddTrack}
-								track={item}
+					<View style={styles.searchResultsLayout}>
+						<View style={styles.fixedNowPlaying}>
+							<NowPlayingCard
+								hasLoaded={hasCheckedPlayback}
+								isLoading={isLoadingPlayback}
+								playbackState={playbackState}
+								selectedDevice={selectedDevice}
+								statusUnavailable={playbackStatusUnavailable}
 							/>
-						)}
-					/>
+						</View>
+						<FlatList
+							contentContainerStyle={styles.results}
+							data={tracks}
+							keyExtractor={(track) => track.id}
+							keyboardShouldPersistTaps='handled'
+							renderItem={({ item }) => (
+								<TrackCard
+									disabled={
+										!selectedDeviceId || Boolean(addingTrackId)
+									}
+									isAdding={addingTrackId === item.id}
+									onAdd={handleAddTrack}
+									track={item}
+								/>
+							)}
+							style={styles.searchResultsList}
+						/>
+					</View>
 				) : (
-					<UpcomingTrackList
-						isLoading={isLoadingQueue}
-						onQueuedTrackAnimationHandled={handleQueuedTrackAnimation}
-						onRefresh={() => refreshQueue()}
-						queuedTrackAnimation={queuedTrackAnimation}
-						queuedTrackAnimations={queuedTrackAnimations}
-						tracks={upcomingTracks}
-					/>
+					<ScrollView contentContainerStyle={styles.dashboardContent}>
+						<NowPlayingCard
+							hasLoaded={hasCheckedPlayback}
+							isLoading={isLoadingPlayback}
+							playbackState={playbackState}
+							selectedDevice={selectedDevice}
+							statusUnavailable={playbackStatusUnavailable}
+						/>
+						<UpcomingTrackList
+							isLoading={isLoadingQueue}
+							onQueuedTrackAnimationHandled={handleQueuedTrackAnimation}
+							onRefresh={() => refreshQueue()}
+							queuedTrackAnimation={queuedTrackAnimation}
+							queuedTrackAnimations={queuedTrackAnimations}
+							tracks={upcomingTracks}
+						/>
+					</ScrollView>
 				)}
 			</View>
 		</View>
@@ -784,5 +887,12 @@ const styles = StyleSheet.create({
 		marginTop: 12,
 		padding: 11,
 	},
-	results: { paddingBottom: 30, paddingTop: 16 },
+	results: { paddingBottom: 30 },
+	fixedNowPlaying: {
+		backgroundColor: "#f7f2eb",
+		paddingBottom: 12,
+	},
+	searchResultsLayout: { flex: 1, minHeight: 0 },
+	searchResultsList: { flex: 1, minHeight: 0 },
+	dashboardContent: { paddingBottom: 30 },
 });

@@ -10,6 +10,8 @@ The current Phase 1 proof of concept includes:
 - secure native token persistence, browser persistence for local development,
   and automatic access-token refresh
 - available-device discovery and selection
+- a resilient Now Playing card for the selected device, including paused and
+  inactive-player states
 - track search with Spotify's Development Mode limit of 10 results
 - add-to-queue with double-tap protection
 - useful messages for inactive players, missing Premium access, expired auth,
@@ -95,8 +97,9 @@ required for a local iOS build.
    speaker.
 3. Open VowTunes and connect Spotify.
 4. Select the active playback device.
-5. Search for a track and press **+ Queue**.
-6. Confirm the track appears in Spotify's upcoming queue.
+5. Confirm the current song and playback state appear in **Now Playing**.
+6. Search for a track and press **+ Queue**.
+7. Confirm the track appears in Spotify's upcoming queue.
 
 Run the project checks with:
 

@@ -52,6 +52,10 @@ export async function getPlaybackQueue(accessToken) {
   return payload?.queue?.slice(0, 5) ?? [];
 }
 
+export async function getPlaybackState(accessToken) {
+  return spotifyRequest(accessToken, '/me/player?additional_types=track');
+}
+
 export async function addTrackToQueue(accessToken, trackUri, deviceId) {
   const parameters = new URLSearchParams({ uri: trackUri });
 
