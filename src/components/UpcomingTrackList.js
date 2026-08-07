@@ -19,7 +19,7 @@ function findAddedTrackIndex(currentTracks, nextTracks) {
     remainingTrackCounts.set(trackIdentity, (remainingTrackCounts.get(trackIdentity) || 0) + 1);
   });
 
-  return nextTracks.findIndex((track) => {
+  const addedTrackIndex = nextTracks.findIndex((track) => {
     const trackIdentity = getTrackIdentity(track);
     const remainingCount = remainingTrackCounts.get(trackIdentity) || 0;
 
@@ -30,9 +30,37 @@ function findAddedTrackIndex(currentTracks, nextTracks) {
     remainingTrackCounts.set(trackIdentity, remainingCount - 1);
     return false;
   });
+
+  if (addedTrackIndex >= 0) {
+    return addedTrackIndex;
+  }
+
+  const maximumOverlap = Math.min(currentTracks.length, nextTracks.length);
+
+  for (let overlapLength = maximumOverlap; overlapLength > 0; overlapLength -= 1) {
+    const currentOffset = currentTracks.length - overlapLength;
+    const overlaps = nextTracks
+      .slice(0, overlapLength)
+      .every((track, index) =>
+        getTrackIdentity(track) === getTrackIdentity(currentTracks[currentOffset + index]),
+      );
+
+    if (overlaps) {
+      return overlapLength < nextTracks.length ? overlapLength : -1;
+    }
+  }
+
+  return nextTracks.length > 0 ? 0 : -1;
 }
 
-export function UpcomingTrackList({ isLoading, onRefresh, queuedTrackAnimation, tracks }) {
+export function UpcomingTrackList({
+  isLoading,
+  onQueuedTrackAnimationHandled,
+  onRefresh,
+  queuedTrackAnimation,
+  queuedTrackAnimations,
+  tracks,
+}) {
   const [displayedTracks, setDisplayedTracks] = useState(tracks);
   const [isRemovingFirstTrack, setIsRemovingFirstTrack] = useState(false);
   const [enteringTrackIndex, setEnteringTrackIndex] = useState(null);
@@ -40,7 +68,6 @@ export function UpcomingTrackList({ isLoading, onRefresh, queuedTrackAnimation, 
   const displayedTracksRef = useRef(tracks);
   const latestTracksRef = useRef(tracks);
   const hasLoadedQueueRef = useRef(false);
-  const handledQueuedTrackAnimationIdRef = useRef(null);
   const previousIsLoadingRef = useRef(isLoading);
   const removalAnimationRef = useRef(null);
   const additionAnimationRef = useRef(null);
@@ -143,19 +170,17 @@ export function UpcomingTrackList({ isLoading, onRefresh, queuedTrackAnimation, 
 
     const animateConfirmedAddition = (addedTrackIndex, nextTracks = tracks) => {
       const addedTrack = nextTracks[addedTrackIndex];
-      const isLatestQueuedTrack = Boolean(
-        queuedTrackAnimation &&
-        queuedTrackAnimation.id !== handledQueuedTrackAnimationIdRef.current &&
-        getTrackIdentity(addedTrack) === getTrackIdentity(queuedTrackAnimation.track)
+      const matchingQueuedTrackAnimation = queuedTrackAnimations.find(
+        (animation) =>
+          getTrackIdentity(addedTrack) === getTrackIdentity(animation.track),
       );
 
-      if (isLatestQueuedTrack) {
-        handledQueuedTrackAnimationIdRef.current = queuedTrackAnimation.id;
+      if (matchingQueuedTrackAnimation) {
+        onQueuedTrackAnimationHandled(matchingQueuedTrackAnimation.id);
       }
 
       if (
-        isLatestQueuedTrack &&
-        queuedTrackAnimation.shouldDropIntoFirstSlot &&
+        matchingQueuedTrackAnimation?.shouldDropIntoFirstSlot &&
         addedTrackIndex === 0
       ) {
         animateTrackDrop(addedTrackIndex);
@@ -214,7 +239,15 @@ export function UpcomingTrackList({ isLoading, onRefresh, queuedTrackAnimation, 
         animateConfirmedAddition(addedTrackIndex, latestTracks);
       }
     });
-  }, [additionProgress, dropProgress, queuedTrackAnimation, removalProgress, tracks]);
+  }, [
+    additionProgress,
+    dropProgress,
+    onQueuedTrackAnimationHandled,
+    queuedTrackAnimation,
+    queuedTrackAnimations,
+    removalProgress,
+    tracks,
+  ]);
 
   useEffect(() => {
     if (previousIsLoadingRef.current && !isLoading) {

@@ -36,26 +36,68 @@ function queuesMatch(currentTracks, nextTracks) {
 	);
 }
 
-function reconcileRequestedQueue(requestedTracks, nextTracks) {
-	const remainingTrackCounts = new Map();
+function countTrackIdentities(tracks) {
+	const trackCounts = new Map();
 
-	nextTracks.forEach((track) => {
+	tracks.forEach((track) => {
 		const trackIdentity = track.uri || track.id;
-		remainingTrackCounts.set(
+		trackCounts.set(
 			trackIdentity,
-			(remainingTrackCounts.get(trackIdentity) || 0) + 1,
+			(trackCounts.get(trackIdentity) || 0) + 1,
 		);
 	});
 
+	return trackCounts;
+}
+
+function findQueueOverlapLength(currentTracks, nextTracks) {
+	const maximumOverlap = Math.min(currentTracks.length, nextTracks.length);
+
+	for (let overlapLength = maximumOverlap; overlapLength > 0; overlapLength -= 1) {
+		const currentOffset = currentTracks.length - overlapLength;
+		const overlaps = nextTracks
+			.slice(0, overlapLength)
+			.every((track, index) =>
+				(track.uri || track.id) ===
+				(currentTracks[currentOffset + index]?.uri || currentTracks[currentOffset + index]?.id),
+			);
+
+		if (overlaps) {
+			return overlapLength;
+		}
+	}
+
+	return 0;
+}
+
+function reconcileRequestedQueue(requestedTracks, currentTracks, nextTracks) {
+	const remainingNextTrackCounts = countTrackIdentities(nextTracks);
+	const queueOverlapLength = findQueueOverlapLength(currentTracks, nextTracks);
+	const addedTrackCounts = countTrackIdentities(nextTracks.slice(queueOverlapLength));
+
 	return requestedTracks.flatMap((request) => {
-		const remainingCount = remainingTrackCounts.get(request.trackIdentity) || 0;
+		let observed = request.observed;
+
+		if (!observed) {
+			const addedCount = addedTrackCounts.get(request.trackIdentity) || 0;
+			if (addedCount > 0) {
+				addedTrackCounts.set(request.trackIdentity, addedCount - 1);
+				observed = true;
+			}
+		}
+
+		if (!observed) {
+			return [request];
+		}
+
+		const remainingCount = remainingNextTrackCounts.get(request.trackIdentity) || 0;
 
 		if (remainingCount > 0) {
-			remainingTrackCounts.set(request.trackIdentity, remainingCount - 1);
+			remainingNextTrackCounts.set(request.trackIdentity, remainingCount - 1);
 			return [{ ...request, observed: true }];
 		}
 
-		return request.observed ? [] : [request];
+		return [];
 	});
 }
 
@@ -97,11 +139,13 @@ export function ProofOfConceptScreen() {
 	const [isSearching, setIsSearching] = useState(false);
 	const [addingTrackId, setAddingTrackId] = useState(null);
 	const [queuedTrackAnimation, setQueuedTrackAnimation] = useState(null);
+	const [queuedTrackAnimations, setQueuedTrackAnimations] = useState([]);
 	const [message, setMessage] = useState("");
 	const [error, setError] = useState("");
 	const searchRequestIdRef = useRef(0);
 	const queuedTrackAnimationIdRef = useRef(0);
 	const requestedQueueRef = useRef([]);
+	const upcomingTracksRef = useRef([]);
 	const queueRefreshInFlightRef = useRef(false);
 	const messageOpacity = useRef(new Animated.Value(0)).current;
 
@@ -193,8 +237,10 @@ export function ProofOfConceptScreen() {
 			const nextTracks = await withSpotifyToken(getPlaybackQueue);
 			requestedQueueRef.current = reconcileRequestedQueue(
 				requestedQueueRef.current,
+				upcomingTracksRef.current,
 				nextTracks,
 			);
+			upcomingTracksRef.current = nextTracks;
 			setUpcomingTracks((currentTracks) =>
 				queuesMatch(currentTracks, nextTracks) ? currentTracks : nextTracks,
 			);
@@ -213,9 +259,17 @@ export function ProofOfConceptScreen() {
 	useEffect(() => {
 		if (!isAuthenticated) {
 			requestedQueueRef.current = [];
+			upcomingTracksRef.current = [];
 			setQueuedTrackAnimation(null);
+			setQueuedTrackAnimations([]);
 		}
 	}, [isAuthenticated]);
+
+	const handleQueuedTrackAnimation = useCallback((animationId) => {
+		setQueuedTrackAnimations((currentAnimations) =>
+			currentAnimations.filter((animation) => animation.id !== animationId),
+		);
+	}, []);
 
 	useEffect(() => {
 		refreshDevices();
@@ -300,11 +354,16 @@ export function ProofOfConceptScreen() {
 					trackIdentity: track.uri || track.id,
 				},
 			];
-			setQueuedTrackAnimation({
+			const queuedAnimation = {
 				id: animationId,
 				shouldDropIntoFirstSlot,
 				track,
-			});
+			};
+			setQueuedTrackAnimation(queuedAnimation);
+			setQueuedTrackAnimations((currentAnimations) => [
+				...currentAnimations,
+				queuedAnimation,
+			]);
 			searchRequestIdRef.current += 1;
 			setQuery("");
 			setTracks([]);
@@ -502,8 +561,10 @@ export function ProofOfConceptScreen() {
 				) : (
 					<UpcomingTrackList
 						isLoading={isLoadingQueue}
+						onQueuedTrackAnimationHandled={handleQueuedTrackAnimation}
 						onRefresh={() => refreshQueue()}
 						queuedTrackAnimation={queuedTrackAnimation}
+						queuedTrackAnimations={queuedTrackAnimations}
 						tracks={upcomingTracks}
 					/>
 				)}
